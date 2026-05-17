@@ -1,0 +1,490 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Word Rush Runner</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #0a0a0f;
+      font-family: 'Courier New', monospace;
+      color: white;
+      overflow: hidden;
+      touch-action: none;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+    }
+
+    #ui {
+      width: 800px;
+      max-width: 100vw;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 8px 16px;
+      background: rgba(255,255,255,0.05);
+      border: 1px solid rgba(255,255,255,0.1);
+      border-bottom: none;
+      font-size: 13px;
+      letter-spacing: 0.05em;
+    }
+
+    #word {
+      font-size: 15px;
+      font-weight: bold;
+      color: #ffd700;
+      text-shadow: 0 0 8px #ffd70088;
+    }
+
+    #score { color: #aaffaa; }
+
+    canvas {
+      display: block;
+      background: #111;
+      border: 1px solid rgba(255,255,255,0.1);
+    }
+
+    #timer-bar-wrap {
+      width: 800px;
+      max-width: 100vw;
+      height: 5px;
+      background: #222;
+    }
+    #timer-bar {
+      height: 100%;
+      background: linear-gradient(90deg, #ff4444, #ffaa00, #44ff88);
+      transition: width 0.1s linear;
+    }
+
+    #gameOver {
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.9);
+      display: none;
+      justify-content: center;
+      align-items: center;
+      flex-direction: column;
+      gap: 14px;
+      font-size: 18px;
+    }
+
+    #gameOver h2 {
+      font-size: 36px;
+      color: #ff4444;
+      text-shadow: 0 0 20px #ff444488;
+      letter-spacing: 0.1em;
+    }
+
+    #gameOver p { color: #ccc; font-size: 16px; }
+
+    #restartBtn {
+      padding: 12px 32px;
+      font-size: 15px;
+      font-family: 'Courier New', monospace;
+      background: transparent;
+      color: #ffd700;
+      border: 2px solid #ffd700;
+      cursor: pointer;
+      letter-spacing: 0.1em;
+      transition: all 0.2s;
+    }
+    #restartBtn:hover { background: #ffd700; color: #000; }
+
+    #hint {
+      position: absolute;
+      bottom: 12px;
+      width: 100%;
+      text-align: center;
+      font-size: 11px;
+      color: #555;
+      letter-spacing: 0.05em;
+    }
+  </style>
+</head>
+<body>
+
+<div id="ui">
+  <div id="word">WORD: ---</div>
+  <div id="score">Score: 0 | Coins: 0</div>
+</div>
+<div id="timer-bar-wrap"><div id="timer-bar" style="width:100%"></div></div>
+<canvas id="game" width="800" height="480"></canvas>
+
+<div id="gameOver">
+  <h2>GAME OVER</h2>
+  <p id="finalScore"></p>
+  <p id="finalCoins"></p>
+  <button id="restartBtn" onclick="resetGame()">▶ PLAY AGAIN</button>
+</div>
+
+<script>
+const c = document.getElementById("game");
+const ctx = c.getContext("2d");
+
+const GROUND_Y = 390;
+const LANE_X = [160, 400, 640];
+const MAX_CHOICE_TIME = 300;
+
+/* ---- STATE ---- */
+let score, coins, speed, dead;
+let lane;
+let jumpV, jumpY, jumping;
+let train, coin, power, gate;
+let choiceTime, selecting;
+let current, options, correctLane, isCorrectSyn;
+let loopId;
+let bgOffset = 0;
+const MAX_CHOICE_TIME_GATE = 400; // more time to choose
+
+/* ---- WORD BANK ---- */
+const wordSets = {
+  easy: [
+    {word:"BIG",     syn:"LARGE",      ant:"SMALL"},
+    {word:"FAST",    syn:"QUICK",      ant:"SLOW"},
+    {word:"HAPPY",   syn:"JOYFUL",     ant:"SAD"},
+    {word:"HOT",     syn:"WARM",       ant:"COLD"},
+    {word:"BRIGHT",  syn:"SHINING",    ant:"DARK"},
+  ],
+  medium: [
+    {word:"BRAVE",   syn:"COURAGEOUS", ant:"COWARDLY"},
+    {word:"SMART",   syn:"INTELLIGENT",ant:"DUMB"},
+    {word:"CALM",    syn:"PEACEFUL",   ant:"ANGRY"},
+    {word:"GENEROUS",syn:"GIVING",     ant:"SELFISH"},
+    {word:"SWIFT",   syn:"NIMBLE",     ant:"SLUGGISH"},
+  ],
+  hard: [
+    {word:"ELOQUENT",    syn:"FLUENT",      ant:"INARTICULATE"},
+    {word:"RESILIENT",   syn:"TENACIOUS",   ant:"FRAGILE"},
+    {word:"BENEVOLENT",  syn:"CHARITABLE",  ant:"MALEVOLENT"},
+    {word:"PRAGMATIC",   syn:"PRACTICAL",   ant:"IDEALISTIC"},
+    {word:"CANDID",      syn:"FORTHRIGHT",  ant:"DECEPTIVE"},
+  ]
+};
+
+function shuffle(a){ return [...a].sort(()=>Math.random()-0.5); }
+
+function getDiff(s){
+  if(s < 50)  return "easy";
+  if(s < 150) return "medium";
+  return "hard";
+}
+
+/* ---- RESET ---- */
+function resetGame(){
+  if(loopId) cancelAnimationFrame(loopId);
+
+  score = 0; coins = 0; speed = 2.5; dead = false;
+  lane = 1;
+  jumpV = 0; jumpY = 0; jumping = false;
+
+  train = {lane:0, y:1800};
+  coin  = {lane:1, y:1200};
+  power = {lane:2, y:2200};
+  gate  = {y:1100};
+
+  document.getElementById("gameOver").style.display = "none";
+
+  newWord();
+  loopId = requestAnimationFrame(loop);
+}
+
+/* ---- NEW WORD ---- */
+function newWord(){
+  const diff = getDiff(score);
+  const pool = wordSets[diff];
+  current = pool[Math.floor(Math.random()*pool.length)];
+
+  isCorrectSyn = Math.random() > 0.5;
+  const correct = isCorrectSyn ? current.syn : current.ant;
+
+  let wrongPool = [];
+  Object.values(wordSets).forEach(set => set.forEach(w => {
+    wrongPool.push(w.syn, w.ant);
+  }));
+  wrongPool = shuffle(wrongPool.filter(x => x !== correct && x !== current.syn && x !== current.ant));
+
+  options = shuffle([wrongPool[0], wrongPool[1], correct]);
+  correctLane = options.indexOf(correct);
+
+  choiceTime = 420;
+  selecting = true;
+
+  const label = isCorrectSyn ? "SYNONYM" : "ANTONYM";
+  document.getElementById("word").innerText =
+    `[${diff.toUpperCase()}] ${label} of: ${current.word}`;
+}
+
+/* ---- DRAW ---- */
+function drawBG(){
+  bgOffset = (bgOffset + speed * 0.5) % 60;
+
+  // Track lanes
+  ctx.fillStyle = "#1a1a2e";
+  ctx.fillRect(0, 0, 800, 480);
+
+  // Lane dividers
+  ctx.strokeStyle = "rgba(255,255,255,0.06)";
+  ctx.lineWidth = 1;
+  [267, 533].forEach(x => {
+    ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,480); ctx.stroke();
+  });
+
+  // Moving road lines
+  ctx.strokeStyle = "rgba(255,255,255,0.12)";
+  ctx.setLineDash([30, 30]);
+  ctx.lineDashOffset = -bgOffset * 2;
+  ctx.lineWidth = 2;
+  [267, 533].forEach(x => {
+    ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,480); ctx.stroke();
+  });
+  ctx.setLineDash([]);
+
+  // Ground line
+  ctx.fillStyle = "rgba(255,255,255,0.08)";
+  ctx.fillRect(0, GROUND_Y + 30, 800, 2);
+}
+
+function drawOptions(){
+  for(let i = 0; i < 3; i++){
+    const x = LANE_X[i];
+    const isCorrect = (i === correctLane);
+
+    // Background pill
+    ctx.fillStyle = i === lane
+      ? "rgba(255,215,0,0.15)"
+      : "rgba(255,255,255,0.05)";
+    roundRect(x - 70, 145, 140, 34, 6);
+
+    ctx.strokeStyle = i === lane ? "#ffd700" : "rgba(255,255,255,0.2)";
+    ctx.lineWidth = i === lane ? 2 : 1;
+    roundRectStroke(x - 70, 145, 140, 34, 6);
+
+    ctx.font = "bold 13px 'Courier New'";
+    ctx.textAlign = "center";
+    ctx.fillStyle = i === lane ? "#ffd700" : "#ddd";
+    ctx.fillText(options[i], x, 167);
+  }
+}
+
+function roundRect(x,y,w,h,r){
+  ctx.beginPath();
+  ctx.roundRect(x,y,w,h,r);
+  ctx.fill();
+}
+function roundRectStroke(x,y,w,h,r){
+  ctx.beginPath();
+  ctx.roundRect(x,y,w,h,r);
+  ctx.stroke();
+}
+
+function drawPlayer(){
+  ctx.font = "38px Arial";
+  ctx.textAlign = "center";
+  ctx.fillText("🏃", LANE_X[lane], GROUND_Y - jumpY);
+}
+
+function drawTrain(){
+  if(train.y > 0 && train.y < 500){
+    ctx.font = "36px Arial";
+    ctx.textAlign = "center";
+    ctx.fillText("🚆", LANE_X[train.lane], train.y);
+  }
+}
+
+function drawCoin(){
+  if(coin.y > 0 && coin.y < 500){
+    ctx.font = "28px Arial";
+    ctx.textAlign = "center";
+    ctx.fillText("🪙", LANE_X[coin.lane], coin.y);
+  }
+}
+
+function drawPower(){
+  if(power.y > 0 && power.y < 500){
+    ctx.font = "28px Arial";
+    ctx.textAlign = "center";
+    ctx.fillText("⚡", LANE_X[power.lane], power.y);
+  }
+}
+
+function drawGate(){
+  if(!selecting || gate.y < 0 || gate.y > 500) return;
+
+  const gateW = 120;
+  const gateH = 50;
+
+  for(let i = 0; i < 3; i++){
+    const x = LANE_X[i];
+    const isCorrect = (i === correctLane);
+
+    ctx.fillStyle = isCorrect
+      ? "rgba(0,255,120,0.15)"
+      : "rgba(255,60,60,0.15)";
+    roundRect(x - gateW/2, gate.y - gateH/2, gateW, gateH, 8);
+
+    ctx.strokeStyle = isCorrect ? "#00ff88" : "#ff4444";
+    ctx.lineWidth = 2;
+    roundRectStroke(x - gateW/2, gate.y - gateH/2, gateW, gateH, 8);
+
+    ctx.font = "bold 14px 'Courier New'";
+    ctx.fillStyle = isCorrect ? "#00ff88" : "#ff6666";
+    ctx.textAlign = "center";
+    ctx.fillText(isCorrect ? "✓ CORRECT" : "✗ WRONG", x, gate.y + 5);
+  }
+}
+
+function drawTimerBar(){
+  const pct = Math.max(0, choiceTime / 420);
+  document.getElementById("timer-bar").style.width = (pct * 100) + "%";
+}
+
+/* ---- GAME OVER ---- */
+function endGame(){
+  dead = true;
+  document.getElementById("gameOver").style.display = "flex";
+  document.getElementById("finalScore").innerText = "Score: " + Math.floor(score);
+  document.getElementById("finalCoins").innerText = "Coins: " + coins;
+}
+
+/* ---- MAIN LOOP (single RAF) ---- */
+function loop(){
+  if(dead) return;
+
+  ctx.clearRect(0,0,800,480);
+  drawBG();
+
+  const spd = speed + score / 400; // much slower scaling
+
+  // Move objects
+  train.y -= spd;
+  coin.y  -= spd;
+  power.y -= spd;
+  gate.y  -= spd;
+
+  // Jump physics
+  if(jumping){
+    jumpY += jumpV;
+    jumpV -= 0.7;
+    if(jumpY <= 0){ jumpY = 0; jumping = false; jumpV = 0; }
+  }
+
+  // Timer countdown
+  if(selecting){
+    choiceTime--;
+    drawTimerBar();
+
+    // Time up — punish: send train on wrong lanes
+    if(choiceTime <= 0){
+      selecting = false;
+      for(let i = 0; i < 3; i++){
+        if(i !== correctLane){ train.lane = i; break; }
+      }
+      train.y = 350;
+    }
+  }
+
+  // Gate check
+  if(gate.y < GROUND_Y + 10 && gate.y > GROUND_Y - 40 && selecting){
+    selecting = false;
+    if(lane === correctLane){
+      score += 10;
+      gate.y = -200; // fly out
+    } else {
+      endGame();
+      return;
+    }
+  }
+
+  // After gate passes, new word
+  if(!selecting && gate.y < -100){
+    gate.y = 1100;
+    newWord();
+  }
+
+  // Coin collect
+  if(coin.y < GROUND_Y + 10 && coin.y > GROUND_Y - 40 && coin.lane === lane){
+    coins++;
+    coin.y = 900 + Math.random()*300;
+    coin.lane = Math.floor(Math.random()*3);
+  }
+
+  // Power collect
+  if(power.y < GROUND_Y + 10 && power.y > GROUND_Y - 40 && power.lane === lane){
+    speed = Math.max(2, speed * 0.5);
+    setTimeout(()=>{ speed = Math.min(12, speed * 1.8); }, 2000);
+    power.y = 1500 + Math.random()*300;
+    power.lane = Math.floor(Math.random()*3);
+  }
+
+  // Train collision
+  if(
+    train.y < GROUND_Y + 10 &&
+    train.y > GROUND_Y - 40 &&
+    train.lane === lane &&
+    jumpY < 25
+  ){
+    endGame();
+    return;
+  }
+
+  // Reset objects that fly past
+  if(train.y < -100){
+    score += 5;
+    train.y = 1800 + Math.random()*600;
+    train.lane = Math.floor(Math.random()*3);
+  }
+  if(coin.y  < -100){ coin.y  = 1200; coin.lane  = Math.floor(Math.random()*3); }
+  if(power.y < -100){ power.y = 2000; power.lane = Math.floor(Math.random()*3); }
+
+  score += 0.02;
+
+  // Draw everything
+  drawGate();
+  drawTrain();
+  drawCoin();
+  drawPower();
+  drawOptions();
+  drawPlayer();
+
+  // Score UI
+  document.getElementById("score").innerText =
+    `Score: ${Math.floor(score)} | Coins: ${coins} | Speed: ${spd.toFixed(1)}`;
+
+  loopId = requestAnimationFrame(loop);
+}
+
+/* ---- CONTROLS ---- */
+document.addEventListener("keydown", e => {
+  if(dead) return;
+  if(e.key === "ArrowLeft")  { lane = Math.max(0, lane-1); e.preventDefault(); }
+  if(e.key === "ArrowRight") { lane = Math.min(2, lane+1); e.preventDefault(); }
+  if((e.key === "ArrowUp" || e.key === " ") && !jumping){
+    jumping = true; jumpV = 12; e.preventDefault();
+  }
+});
+
+let sx = 0, sy = 0;
+document.addEventListener("touchstart", e => {
+  sx = e.touches[0].clientX;
+  sy = e.touches[0].clientY;
+}, {passive:true});
+
+document.addEventListener("touchend", e => {
+  if(dead) return;
+  const dx = e.changedTouches[0].clientX - sx;
+  const dy = e.changedTouches[0].clientY - sy;
+  if(Math.abs(dx) > Math.abs(dy)){
+    if(dx >  40) lane = Math.min(2, lane+1);
+    if(dx < -40) lane = Math.max(0, lane-1);
+  } else if(dy < -30 && !jumping){
+    jumping = true; jumpV = 12;
+  }
+});
+
+/* ---- START ---- */
+resetGame();
+</script>
+</body>
+</html>
